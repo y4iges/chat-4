@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ollama Memory Chat</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+    #chat-container { height: 400px; border: 1px solid #ccc; padding: 10px; overflow-y: auto; margin-bottom: 10px; }
+    #input-container { display: flex; gap: 10px; }
+    #message-input { flex-grow: 1; padding: 5px; }
+    .message { margin-bottom: 10px; padding: 5px; cursor: pointer; }
+    .user-message { background-color: #e3f2fd; border-radius: 5px; }
+    .assistant-message { background-color: #f5f5f5; border-radius: 5px; }
+    .selected { border: 2px solid orange; }
+    #settings-panel { border: 1px solid #aaa; padding: 10px; margin-top: 20px; }
+    #settings-panel input, #settings-panel textarea { width: 100%; margin-bottom: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Ollama Memory Chat</h1>
+  <div id="chat-container"></div>
+  <div id="input-container">
+    <input type="text" id="message-input" placeholder="Type your message...">
+    <!-- Dropdown for model selection (only Gemma and Mxbai available) -->
+    <select id="model-select">
+      <option value="gemma-2-2b-it.q8_0:latest">Gemma (Chat)</option>
+      <option value="mxbai-embed-large:latest">Mxbai (Embedding)</option>
+    </select>
+    <button onclick="sendMessage()">Send</button>
+  </div>
+  <hr>
+  <div id="session-controls">
+    <h3>Session Management</h3>
+    <div>
+      Session Name: <input type="text" id="session-name" placeholder="Enter a session name">
+    </div>
+    <div>
+      <button onclick="saveSession()">Save Session</button>
+    </div>
+    <div>
+      <button onclick="loadSessionList()">Refresh Session List</button>
+      <select id="session-list">
+        <option value="">-- Select Session --</option>
+      </select>
+      <button onclick="loadSession()">Load Selected Session</button>
+    </div>
+    <div>
+      <button onclick="memorizeSelectedMessages()">Memorize Selected Messages</button>
+    </div>
+  </div>
+  
+  <!-- New System Settings Panel -->
+  <div id="settings-panel">
+    <h3>System Settings</h3>
+    <label for="system-prompt">System Prompt:</label>
+    <textarea id="system-prompt" rows="3" placeholder="Enter your system prompt here..."></textarea>
+    <label for="llm-temperature">LLM Temperature:</label>
+    <input type="number" id="llm-temperature" step="0.1" placeholder="0.7">
+    <label for="llm-max-tokens">LLM Max Tokens:</label>
+    <input type="number" id="llm-max-tokens" placeholder="128">
+    <label for="llm-top-p">LLM Top P:</label>
+    <input type="number" id="llm-top-p" step="0.05" placeholder="0.95">
+    <button onclick="applySettings()">Apply Settings</button>
+  </div>
+
+  <script>
+    const chatContainer = document.getElementById('chat-container');
+    const messageInput = document.getElementById('message-input');
+    const modelSelect = document.getElementById('model-select');
+    const sessionNameInput = document.getElementById('session-name');
+    const sessionListSelect = document.getElementById('session-list');
+    const systemPromptInput = document.getElementById('system-prompt');
+    const llmTemperatureInput = document.getElementById('llm-temperature');
+    const llmMaxTokensInput = document.getElementById('llm-max-tokens');
+    const llmTopPInput = document.getElementById('llm-top-p');
+
+    // Default values from our settings (could be set dynamically on page load)
+    let systemPrompt = "You are a helpful AI assistant. Use the context from relevant memories if provided.";
+    let llmTemperature = 0.7;
+    let llmMaxTokens = 128;
+    let llmTopP = 0.95;
+
+    // Set placeholder values in the settings panel
+    systemPromptInput.value = systemPrompt;
+    llmTemperatureInput.value = llmTemperature;
+    llmMaxTokensInput.value = llmMaxTokens;
+    llmTopPInput.value = llmTopP;
+
+    let chatHistory = [];
+    let selectedMessages = [];
+
+    function addMessage(role, content) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `message ${role}-message`;
+      messageDiv.textContent = (role === 'user' ? 'You: ' : 'Assistant: ') + content;
+      messageDiv.addEventListener('click', () => {
+        messageDiv.classList.toggle('selected');
+        const messageText = messageDiv.textContent;
+        if(messageDiv.classList.contains('selected')) {
+          selectedMessages.push(messageText);
+        } else {
+          selectedMessages = selectedMessages.filter(m => m !== messageText);
+        }
+      });
+      chatContainer.appendChild(messageDiv);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      chatHistory.push((role === 'user' ? 'You: ' : 'Assistant: ') + content);
+    }
+
+    async function sendMessage() {
+      const message = messageInput.value.trim();
+      if (!message) return;
+      addMessage('user', message);
+      messageInput.value = '';
+      const selectedModel = modelSelect.value;
+      const session = sessionNameInput.value.trim();
+      if (!session) {
+        alert("Please enter a session name before sending a message.");
+        return;
+      }
+      // Include settings in the payload
+      const payload = { 
+        message, 
+        model: selectedModel,
+        session: session,
+        system_prompt: systemPrompt, // send current system prompt
+        llm_temperature: llmTemperature,
+        llm_max_tokens: llmMaxTokens,
+        llm_top_p: llmTopP
+      };
+      try {
+        const response = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error('Failed to get response');
+        const data = await response.json();
+        addMessage('assistant', data.response);
+      } catch (error) {
+        console.error('Error:', error);
+        addMessage('assistant', 'Sorry, there was an error processing your request.');
+      }
+    }
+
+    async function saveSession() {
+      const sessionName = sessionNameInput.value.trim();
+      if (!sessionName) {
+        alert("Please enter a session name to save.");
+        return;
+      }
+      try {
+        const response = await fetch('/session/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_name: sessionName, chat_history: chatHistory })
+        });
+        if (!response.ok) throw new Error('Failed to save session');
+        const data = await response.json();
+        alert(`Session saved as: ${data.session_name}`);
+      } catch (error) {
+        console.error('Error saving session:', error);
+        alert("Error saving session.");
+      }
+    }
+
+    async function loadSessionList() {
+      try {
+        const response = await fetch('/session/list');
+        if (!response.ok) throw new Error('Failed to load session list');
+        const data = await response.json();
+        sessionListSelect.innerHTML = '<option value="">-- Select Session --</option>';
+        data.sessions.forEach(session => {
+          const option = document.createElement('option');
+          option.value = session;
+          option.textContent = session;
+          sessionListSelect.appendChild(option);
+        });
+      } catch (error) {
+        console.error('Error loading session list:', error);
+        alert("Error loading session list.");
+      }
+    }
+
+    async function loadSession() {
+      const sessionName = sessionListSelect.value;
+      if (!sessionName) {
+        alert("Please select a session from the list.");
+        return;
+      }
+      try {
+        const response = await fetch(`/session/load?session_name=${encodeURIComponent(sessionName)}`);
+        if (!response.ok) throw new Error('Failed to load session');
+        const data = await response.json();
+        chatHistory = data.chat_history || [];
+        chatContainer.innerHTML = "";
+        selectedMessages = [];
+        chatHistory.forEach(text => {
+          const role = text.startsWith("You:") ? "user" : "assistant";
+          const content = text.split(": ").slice(1).join(": ");
+          addMessage(role, content);
+        });
+        alert("Session loaded.");
+        sessionNameInput.value = sessionName;
+      } catch (error) {
+        console.error('Error loading session:', error);
+        alert("Error loading session.");
+      }
+    }
+
+    async function memorizeSelectedMessages() {
+      if (selectedMessages.length === 0) {
+        alert("Please select messages to memorize.");
+        return;
+      }
+      const session = sessionNameInput.value.trim();
+      if (!session) {
+        alert("Please enter a session name.");
+        return;
+      }
+      try {
+        const response = await fetch('/memorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            messages: selectedMessages, 
+            session: session 
+          })
+        });
+        if (!response.ok) throw new Error('Failed to memorize messages');
+        const data = await response.json();
+        alert("Memorized summary saved to session memory.");
+        selectedMessages = [];
+        document.querySelectorAll('.message.selected').forEach(msg => msg.classList.remove('selected'));
+      } catch (error) {
+        console.error('Error in memorization:', error);
+        alert("Error memorizing messages.");
+      }
+    }
+
+    function applySettings() {
+      systemPrompt = systemPromptInput.value.trim() || systemPrompt;
+      llmTemperature = parseFloat(llmTemperatureInput.value) || llmTemperature;
+      llmMaxTokens = parseInt(llmMaxTokensInput.value) || llmMaxTokens;
+      llmTopP = parseFloat(llmTopPInput.value) || llmTopP;
+      alert("Settings applied! They will be used for subsequent messages.");
+      // Optionally: store these values in local storage for persistence
+      localStorage.setItem("systemPrompt", systemPrompt);
+      localStorage.setItem("llmTemperature", llmTemperature);
+      localStorage.setItem("llmMaxTokens", llmMaxTokens);
+      localStorage.setItem("llmTopP", llmTopP);
+    }
+
+    messageInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') sendMessage();
+    });
+
+    // On page load, automatically refresh session list.
+    loadSessionList();
+    // Optionally, load settings from local storage
+    if(localStorage.getItem("systemPrompt")) {
+      systemPrompt = localStorage.getItem("systemPrompt");
+      systemPromptInput.value = systemPrompt;
+    }
+    if(localStorage.getItem("llmTemperature")) {
+      llmTemperature = parseFloat(localStorage.getItem("llmTemperature"));
+      llmTemperatureInput.value = llmTemperature;
+    }
+    if(localStorage.getItem("llmMaxTokens")) {
+      llmMaxTokens = parseInt(localStorage.getItem("llmMaxTokens"));
+      llmMaxTokensInput.value = llmMaxTokens;
+    }
+    if(localStorage.getItem("llmTopP")) {
+      llmTopP = parseFloat(localStorage.getItem("llmTopP"));
+      llmTopPInput.value = llmTopP;
+    }
+  </script>
+</body>
+</html>
